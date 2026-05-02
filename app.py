@@ -1,105 +1,137 @@
 import streamlit as st
 import torch
-from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
-import os
+from transformers import pipeline
 from pathlib import Path
+import pandas as pd
 
-# ====================== PAGE CONFIG ======================
 st.set_page_config(
-    page_title="🛡️ LLM Spam/Phishing Detector",
+    page_title="🛡️ LLM Spam & Phishing Detector",
     page_icon="📧",
-    layout="centered",
-    initial_sidebar_state="expanded"
+    layout="centered"
 )
 
-# ====================== CUSTOM CSS ======================
-st.markdown("""
-<style>
-    .main-header {font-size: 2.5rem; color: #1E88E5;}
-    .stTextArea textarea {height: 220px !important;}
-    .result-box {padding: 20px; border-radius: 10px; margin: 10px 0;}
-</style>
-""", unsafe_allow_html=True)
+st.title("🛡️ LLM-Powered Spam / Phishing Detector")
+st.markdown("**Advanced detection using Transformer models**")
 
 # ====================== MODEL LOADING ======================
-@st.cache_resource(show_spinner="Loading LLM Model...")
-def load_llm_model():
-    model_path = Path("model")  # Path where notebook saved the model
+@st.cache_resource(show_spinner="Loading AI Model...")
+def load_model():
+    model_dir = Path("model")
     
-    if model_path.exists() and (model_path / "config.json").exists():
-        # Load fine-tuned DistilBERT from notebook
-        classifier = pipeline(
-            "text-classification",
-            model=str(model_path),
-            tokenizer=str(model_path),
-            device=0 if torch.cuda.is_available() else -1,
-            truncation=True,
-            max_length=128
-        )
-        st.success("✅ Loaded **Fine-tuned DistilBERT** model")
-        return classifier, "fine-tuned"
-    else:
-        # Fallback: Use a strong zero-shot or general spam model
-        st.info("Fine-tuned model not found. Using general-purpose spam detection model...")
+    # Try your fine-tuned model first
+    if model_dir.exists() and (model_dir / "config.json").exists():
         try:
-            classifier = pipeline(
+            pipe = pipeline(
                 "text-classification",
-                model="mrm8488/distilroberta-finetuned-spam",
-                device=0 if torch.cuda.is_available() else -1
+                model=str(model_dir),
+                tokenizer=str(model_dir),
+                device=0 if torch.cuda.is_available() else -1,
+                truncation=True,
+                max_length=512
             )
-            st.success("✅ Loaded **DistilRoBERTa Spam Model**")
-            return classifier, "general"
+            st.success("✅ **Your Fine-tuned DistilBERT** model loaded")
+            return pipe, "fine-tuned"
         except:
-            # Ultimate fallback
-            classifier = pipeline(
-                "zero-shot-classification",
-                model="facebook/bart-large-mnli",
-                device=-1
-            )
-            st.warning("Using Zero-Shot classification (slower but works)")
-            return classifier, "zero-shot"
-
-# Load the model once
-classifier, model_type = load_llm_model()
-
-# ====================== SIDEBAR ======================
-with st.sidebar:
-    st.header("🔧 Settings")
-    confidence_threshold = st.slider("Confidence Threshold", 0.5, 0.95, 0.7, 0.05)
+            pass
     
-    st.markdown("---")
-    st.markdown("### Model Info")
-    if model_type == "fine-tuned":
-        st.success("Using your trained DistilBERT model")
-    elif model_type == "general":
-        st.info("Using pre-trained spam model")
-    else:
-        st.info("Zero-shot classification")
-    
-    st.markdown("---")
-    st.caption("Built with ❤️ using Hugging Face Transformers")
+    # Fallback 1: Good open spam model
+    try:
+        pipe = pipeline(
+            "text-classification",
+            model="mrm8488/distilroberta-finetuned-spam",
+            device=0 if torch.cuda.is_available() else -1
+        )
+        st.success("✅ Loaded **DistilRoBERTa Spam Classifier**")
+        return pipe, "general"
+    except:
+        # Fallback 2: Zero-shot (always works)
+        pipe = pipeline(
+            "zero-shot-classification",
+            model="facebook/bart-large-mnli",
+            device=-1
+        )
+        st.info("Using Zero-Shot classification")
+        return pipe, "zero-shot"
 
-# ====================== MAIN UI ======================
-st.title("🛡️ LLM-Powered Spam / Phishing Detector")
-st.markdown("Detect spam and phishing attempts using **modern transformer models**")
+pipe, model_type = load_model()
 
-tab1, tab2 = st.tabs(["📝 Single Message", "📊 Batch Analysis"])
+# ====================== UI ======================
+tab1, tab2 = st.tabs(["Single Message", "Batch Analysis"])
 
 with tab1:
-    user_input = st.text_area(
-        "Paste your email or SMS message here:",
-        placeholder="Enter message to analyze...",
-        height=180
-    )
+    message = st.text_area("Paste Email or SMS message:", height=200, 
+                          placeholder="Enter message to analyze...")
 
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        analyze_button = st.button("🔍 Analyze Message", type="primary", use_container_width=True)
-    with col2:
-        clear_button = st.button("Clear", use_container_width=True)
+    if st.button("🔍 Analyze", type="primary", use_container_width=True):
+        if not message.strip():
+            st.warning("Please enter a message")
+        else:
+            with st.spinner("Analyzing with LLM..."):
+                try:
+                    if model_type == "zero-shot":
+                        result = pipe(message[:512], candidate_labels=["spam", "ham"])
+                        is_spam = result["labels"][0] == "spam"
+                        confidence = result["scores"][0]
+                    else:
+                        result = pipe(message[:512])[0]
+                        is_spam = result["label"].lower() in ["spam", "1", "label_1"]
+                        confidence = result["score"]
 
-    if clear_button:
-        st.rerun()
+                    st.divider()
+                    
+                    if is_spam:
+                        st.error("### 🚨 SPAM / PHISHING DETECTED", icon="⚠️")
+                        st.markdown(f"**Confidence:** `{confidence:.1%}`")
+                        st.warning("**Do not click any links or reply.**")
+                    else:
+                        st.success("### ✅ This message appears safe", icon="✅")
+                        st.markdown(f"**Confidence:** `{confidence:.1%}`")
+                    
+                    with st.expander("Raw Model Output"):
+                        st.json(result)
 
-    if analyze_button and user_input.strip():
-        with st
+                except Exception as e:
+                    st.error(f"Analysis failed: {e}")
+
+with tab2:
+    st.subheader("Batch Analysis")
+    uploaded = st.file_uploader("Upload CSV or TXT (one message per line)", 
+                               type=["csv", "txt"])
+    
+    if uploaded:
+        if uploaded.name.endswith(".csv"):
+            df = pd.read_csv(uploaded)
+            col = st.selectbox("Select message column", df.columns)
+            messages = df[col].astype(str).tolist()
+        else:
+            messages = [line.decode().strip() for line in uploaded if line.strip()]
+        
+        if st.button("Analyze All Messages", type="primary"):
+            with st.spinner(f"Processing {len(messages)} messages..."):
+                results = []
+                for msg in messages:
+                    try:
+                        if model_type == "zero-shot":
+                            res = pipe(msg[:512], candidate_labels=["spam", "ham"])
+                            spam = res["labels"][0] == "spam"
+                            conf = res["scores"][0]
+                        else:
+                            res = pipe(msg[:512])[0]
+                            spam = res["label"].lower() in ["spam", "1", "label_1"]
+                            conf = res["score"]
+                        
+                        results.append({
+                            "Message": msg[:80] + "..." if len(msg) > 80 else msg,
+                            "Prediction": "SPAM" if spam else "HAM",
+                            "Confidence": f"{conf:.1%}"
+                        })
+                    except:
+                        results.append({"Message": msg[:80]+"...", "Prediction": "ERROR", "Confidence": "N/A"})
+                
+                result_df = pd.DataFrame(results)
+                st.dataframe(result_df, use_container_width=True)
+                
+                spam_count = sum(1 for r in results if r["Prediction"] == "SPAM")
+                st.metric("Spam Detected", f"{spam_count} / {len(messages)}")
+
+st.caption("Built with Hugging Face Transformers • Fine-tuned DistilBERT ready")
