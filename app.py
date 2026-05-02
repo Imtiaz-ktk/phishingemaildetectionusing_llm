@@ -1,58 +1,105 @@
 import streamlit as st
-import joblib
+import torch
+from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
 import os
+from pathlib import Path
 
-# 1. Setup Page Config
-st.set_page_config(page_title="Phishing Detection", page_icon="📧")
+# ====================== PAGE CONFIG ======================
+st.set_page_config(
+    page_title="🛡️ LLM Spam/Phishing Detector",
+    page_icon="📧",
+    layout="centered",
+    initial_sidebar_state="expanded"
+)
 
-# 2. Cache the model loading
-# This prevents reloading the 268MB file on every user interaction
-@st.cache_resource
-def load_phishing_model():
-    model_path = "spam_model.pkl"
-    if os.path.exists(model_path):
-        return joblib.load(model_path)
+# ====================== CUSTOM CSS ======================
+st.markdown("""
+<style>
+    .main-header {font-size: 2.5rem; color: #1E88E5;}
+    .stTextArea textarea {height: 220px !important;}
+    .result-box {padding: 20px; border-radius: 10px; margin: 10px 0;}
+</style>
+""", unsafe_allow_html=True)
+
+# ====================== MODEL LOADING ======================
+@st.cache_resource(show_spinner="Loading LLM Model...")
+def load_llm_model():
+    model_path = Path("model")  # Path where notebook saved the model
+    
+    if model_path.exists() and (model_path / "config.json").exists():
+        # Load fine-tuned DistilBERT from notebook
+        classifier = pipeline(
+            "text-classification",
+            model=str(model_path),
+            tokenizer=str(model_path),
+            device=0 if torch.cuda.is_available() else -1,
+            truncation=True,
+            max_length=128
+        )
+        st.success("✅ Loaded **Fine-tuned DistilBERT** model")
+        return classifier, "fine-tuned"
     else:
-        st.error("Model file not found! Please check your GitHub repository.")
-        return None
+        # Fallback: Use a strong zero-shot or general spam model
+        st.info("Fine-tuned model not found. Using general-purpose spam detection model...")
+        try:
+            classifier = pipeline(
+                "text-classification",
+                model="mrm8488/distilroberta-finetuned-spam",
+                device=0 if torch.cuda.is_available() else -1
+            )
+            st.success("✅ Loaded **DistilRoBERTa Spam Model**")
+            return classifier, "general"
+        except:
+            # Ultimate fallback
+            classifier = pipeline(
+                "zero-shot-classification",
+                model="facebook/bart-large-mnli",
+                device=-1
+            )
+            st.warning("Using Zero-Shot classification (slower but works)")
+            return classifier, "zero-shot"
 
-# Load the model
-model = load_phishing_model()
+# Load the model once
+classifier, model_type = load_llm_model()
 
-# 3. UI Design
-st.title("📧 Phishing / Spam Detection")
-st.write("Enter an Email or SMS message below to check for security threats.")
-
-user_input = st.text_area("Message Content", placeholder="Paste message here...", height=200)
-
-# 4. Prediction Logic
-if st.button("Analyze Message"):
-    if user_input.strip() != "":
-        if model is not None:
-            with st.spinner("Analyzing..."):
-                # Make prediction
-                # Note: This assumes your model handles text vectorization internally 
-                # (e.g., a Pipeline with TfidfVectorizer + Classifier)
-                prediction = model.predict([user_input])[0]
-                
-                # Handling probability if the model supports it
-                try:
-                    proba = model.predict_proba([user_input])
-                    confidence = proba.max()
-                except:
-                    confidence = None
-
-                # 5. Display Results
-                st.divider()
-                if prediction == 1: # Assuming 1 is Spam/Phishing
-                    st.error("### ⚠️ Spam / Phishing Detected")
-                    if confidence:
-                        st.info(f"**Confidence Level:** {confidence:.2%}")
-                else:
-                    st.success("### ✅ Safe Message")
-                    if confidence:
-                        st.info(f"**Confidence Level:** {confidence:.2%}")
-        else:
-            st.error("Model failed to load.")
+# ====================== SIDEBAR ======================
+with st.sidebar:
+    st.header("🔧 Settings")
+    confidence_threshold = st.slider("Confidence Threshold", 0.5, 0.95, 0.7, 0.05)
+    
+    st.markdown("---")
+    st.markdown("### Model Info")
+    if model_type == "fine-tuned":
+        st.success("Using your trained DistilBERT model")
+    elif model_type == "general":
+        st.info("Using pre-trained spam model")
     else:
-        st.warning("Please enter some text to analyze.")
+        st.info("Zero-shot classification")
+    
+    st.markdown("---")
+    st.caption("Built with ❤️ using Hugging Face Transformers")
+
+# ====================== MAIN UI ======================
+st.title("🛡️ LLM-Powered Spam / Phishing Detector")
+st.markdown("Detect spam and phishing attempts using **modern transformer models**")
+
+tab1, tab2 = st.tabs(["📝 Single Message", "📊 Batch Analysis"])
+
+with tab1:
+    user_input = st.text_area(
+        "Paste your email or SMS message here:",
+        placeholder="Enter message to analyze...",
+        height=180
+    )
+
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        analyze_button = st.button("🔍 Analyze Message", type="primary", use_container_width=True)
+    with col2:
+        clear_button = st.button("Clear", use_container_width=True)
+
+    if clear_button:
+        st.rerun()
+
+    if analyze_button and user_input.strip():
+        with st
